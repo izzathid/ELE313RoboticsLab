@@ -41,9 +41,11 @@ static inline int clamp(int v, int lo, int hi)
 }
 
 /* ── Tunable parameters ─────────────────────────────────────────────────── */
-#define SEARCH_SPEED     300   /* slow rotation speed while searching         */
-#define BASE_SPEED       500   /* forward speed while following               */
-#define MAX_STEER        400   /* maximum steering correction added/subtracted*/
+#define SEARCH_SPEED     500   /* slow rotation speed while searching         */
+#define BASE_SPEED       750   /* forward speed while following               */
+#define MAX_					set_rgb_led (LED2, 1, 0, 1);
+set_rgb_led (LED4, 1, 0, 1);
+set_rgb_led (LED6, 1, 0, 1);STEER        600   /* maximum steering correction added/subtracted*/
 
 /*
  * DETECT_TH  – object must exceed this to leave SEARCH mode.
@@ -52,10 +54,10 @@ static inline int clamp(int v, int lo, int hi)
  *              Between STOP_NEAR and STOP_FAR the robot holds position.
  * LOST_TH    – if front drops below this, re-enter SEARCH mode.
  */
-#define DETECT_TH        200
-#define STOP_NEAR        600   /* ← increase this if robot still crashes      */
-#define STOP_FAR         350   /* comfortable following distance               */
-#define LOST_TH          100
+#define DETECT_TH        100
+#define STOP_NEAR        650   /* ← increase this if robot still crashes      */
+#define STOP_FAR         300   /* comfortable following distance               */
+#define LOST_TH          50
 
 /*
  * Steering gain: error = (right_sensor - left_sensor).
@@ -103,8 +105,12 @@ int main(void)
          * ──────────────────────────────────────────────────────────────── */
         case SEARCH:
             /* Indicate searching with blinking body LED */
-            set_body_led(2);              /* toggle each loop               */
-            set_front_led(0);
+        	set_rgb_led (LED8, 0, 0, 1);
+			set_rgb_led (LED2, 0, 0, 1);
+			set_rgb_led (LED4, 0, 0, 1);
+			set_rgb_led (LED6, 0, 0, 1);
+        	set_body_led(2);              /* toggle each loop               */
+            set_front_led(2);
 
             left_motor_set_speed( SEARCH_SPEED);
             right_motor_set_speed(-SEARCH_SPEED);   /* rotate clockwise     */
@@ -119,8 +125,12 @@ int main(void)
          * FOLLOW: track the object, steering proportionally
          * ──────────────────────────────────────────────────────────────── */
         case FOLLOW:
-            set_body_led(1);
+        	set_rgb_led (LED8, 1, 0, 1);
+			set_rgb_led (LED2, 1, 0, 1);
+			set_rgb_led (LED4, 1, 0, 1);
+			set_rgb_led (LED6, 1, 0, 1);
             set_front_led(1);
+            set_body_led(1);
 
             /* Lost the object – go back to searching */
             if (front < LOST_TH)
@@ -157,7 +167,11 @@ int main(void)
          * HOLD: object is very close – stop and wait
          * ──────────────────────────────────────────────────────────────── */
         case HOLD:
-            set_body_led(1);
+        	set_rgb_led (LED8, 1, 0, 0);
+			set_rgb_led (LED2, 1, 0, 0);
+			set_rgb_led (LED4, 1, 0, 0);
+			set_rgb_led (LED6, 1, 0, 0);
+        	set_body_led(1);
             set_front_led(0);
 
             left_motor_set_speed(0);
@@ -182,5 +196,8 @@ int main(void)
 
 /* Stack guard */
 #define STACK_CHK_GUARD 0xe2dee396
+uintptr_t __stack_chk_guard = STACK_CHK_GUARD;
+void __stack_chk_fail(void) { chSysHalt("Stack smashing detected"); }
+
 uintptr_t __stack_chk_guard = STACK_CHK_GUARD;
 void __stack_chk_fail(void) { chSysHalt("Stack smashing detected"); }
