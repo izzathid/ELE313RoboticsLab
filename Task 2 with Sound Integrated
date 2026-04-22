@@ -1,0 +1,231 @@
+/*
+
+- Task 2: Object following with melody
+- 
+- Behaviour:
+- - SEARCH : robot rotates slowly, blue LEDs, no sound
+- - FOLLOW : robot follows object, purple LEDs, STARWARS melody plays
+- - HOLD   : robot stops (object too close), red LEDs, melody stops
+- 
+- Sensor layout (top view):
+- ```
+     front
+  ```
+- 7        0
+- 6            1
+- 5            2
+- 4        3
+- ```
+     back
+  ```
+
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+#include “ch.h”
+#include “hal.h”
+#include “memory_protection.h”
+#include <main.h>
+#include “leds.h”
+#include “spi_comm.h”
+#include “sensors/proximity.h”
+#include “motors.h”
+#include “audio/audio_thread.h”
+#include “audio/play_melody.h”
+#include “audio/play_sound_file.h”
+
+messagebus_t bus;
+MUTEX_DECL(bus_lock);
+CONDVAR_DECL(bus_condvar);
+
+static inline int imax(int a, int b) { return (a > b) ? a : b; }
+static inline int clamp(int v, int lo, int hi)
+{
+return (v < lo) ? lo : (v > hi) ? hi : v;
+}
+
+/* ── Tunable parameters ─────────────────────────────────────────────────── */
+#define SEARCH_SPEED     500
+#define BASE_SPEED       600
+#define MAX_STEER        550
+
+#define DETECT_TH        100
+#define STOP_NEAR        650
+#define STOP_FAR         300
+#define LOST_TH          50
+
+#define STEER_GAIN        60
+/* ─────────────────────────────────────────────────────────────────────────  */
+
+typedef enum { SEARCH, FOLLOW, HOLD } State;
+
+int main(void)
+{
+halInit();
+chSysInit();
+mpu_init();
+
+```
+/* Proximity */
+messagebus_init(&bus, &bus_lock, &bus_condvar);
+proximity_start(0);
+calibrate_ir();
+
+/* LEDs */
+clear_leds();
+spi_comm_start();
+
+/* Motors */
+motors_init();
+
+/* Audio — initialised once before the loop */
+dac_start();
+playMelodyStart();
+chThdSleepMilliseconds(50);   /* small pause to let audio thread settle   */
+
+State state      = SEARCH;
+State prev_state = HOLD;      /* force state-entry actions on first loop  */
+
+while (1)
+{
+    /* ── Read sensors ──────────────────────────────────────────────── */
+    int sr    = get_calibrated_prox(0);   /* front-right               */
+    int sl    = get_calibrated_prox(7);   /* front-left                */
+    int front = imax(sr, sl);
+
+    /* ── State machine ─────────────────────────────────────────────── */
+    switch (state)
+    {
+    /* ────────────────────────────────────────────────────────────────
+     * SEARCH: slowly rotate until an object is detected — no melody
+     * ──────────────────────────────────────────────────────────────── */
+    case SEARCH:
+        /* Stop melody only when first entering SEARCH */
+        if (prev_state != SEARCH)
+        {
+            playMelody(MARIO, ML_STOP, NULL);
+        }
+
+        set_rgb_led(LED8, 0, 0, 1);
+        set_rgb_led(LED2, 0, 0, 1);
+        set_rgb_led(LED4, 0, 0, 1);
+        set_rgb_led(LED6, 0, 0, 1);
+        set_body_led(2);
+        set_front_led(2);
+
+        left_motor_set_speed( SEARCH_SPEED);
+        right_motor_set_speed(-SEARCH_SPEED);
+
+        if (front > DETECT_TH)
+        {
+            prev_state = state;
+            state = FOLLOW;
+        }
+        else
+        {
+            prev_state = SEARCH;
+        }
+        break;
+
+    /* ────────────────────────────────────────────────────────────────
+     * FOLLOW: track the object — STARWARS melody plays
+     * ──────────────────────────────────────────────────────────────── */
+    case FOLLOW:
+        /* Start melody only when first entering FOLLOW */
+        if (prev_state != FOLLOW)
+        {
+            playMelody(STARWARS, ML_SIMPLE_PLAY, NULL);
+        }
+
+        set_rgb_led(LED8, 1, 0, 1);
+        set_rgb_led(LED2, 1, 0, 1);
+        set_rgb_led(LED4, 1, 0, 1);
+        set_rgb_led(LED6, 1, 0, 1);
+        set_front_led(1);
+        set_body_led(1);
+
+        /* Lost the object → search */
+        if (front < LOST_TH)
+        {
+            prev_state = state;
+            state = SEARCH;
+            break;
+        }
+
+        /* Too close → hold */
+        if (front > STOP_NEAR)
+        {
+            prev_state = state;
+            state = HOLD;
+            break;
+        }
+
+        /* Proportional steering */
+        {
+            int error      = sr - sl;
+            int correction = clamp((error * STEER_GAIN) / 100,
+                                   -MAX_STEER, MAX_STEER);
+
+            int left_spd  = clamp(BASE_SPEED + correction, -1000, 1000);
+            int right_spd = clamp(BASE_SPEED - correction, -1000, 1000);
+
+            left_motor_set_speed(left_spd);
+            right_motor_set_speed(right_spd);
+        }
+
+        prev_state = FOLLOW;
+        break;
+
+    /* ────────────────────────────────────────────────────────────────
+     * HOLD: object too close — stop motors and stop melody
+     * ──────────────────────────────────────────────────────────────── */
+    case HOLD:
+        /* Stop melody only when first entering HOLD */
+        if (prev_state != HOLD)
+        {
+            playMelody(MARIO, ML_STOP, NULL);
+        }
+
+        set_rgb_led(LED8, 1, 0, 0);
+        set_rgb_led(LED2, 1, 0, 0);
+        set_rgb_led(LED4, 1, 0, 0);
+        set_rgb_led(LED6, 1, 0, 0);
+        set_body_led(1);
+        set_front_led(0);
+
+        left_motor_set_speed(0);
+        right_motor_set_speed(0);
+
+        /* Object moved to comfortable distance → follow again */
+        if (front < STOP_FAR)
+        {
+            prev_state = state;
+            state = FOLLOW;
+        }
+        /* Lost object entirely → search */
+        else if (front < LOST_TH)
+        {
+            prev_state = state;
+            state = SEARCH;
+        }
+        else
+        {
+            prev_state = HOLD;
+        }
+        break;
+    }
+
+    chThdSleepMilliseconds(30);
+}
+```
+
+}
+
+/* Stack guard */
+#define STACK_CHK_GUARD 0xe2dee396
+uintptr_t __stack_chk_guard = STACK_CHK_GUARD;
+void __stack_chk_fail(void) { chSysHalt(“Stack smashing detected”); }
