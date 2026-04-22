@@ -43,9 +43,8 @@ static inline int clamp(int v, int lo, int hi)
 /* ── Tunable parameters ─────────────────────────────────────────────────── */
 #define SEARCH_SPEED     500   /* slow rotation speed while searching         */
 #define BASE_SPEED       750   /* forward speed while following               */
-#define MAX_					set_rgb_led (LED2, 1, 0, 1);
-set_rgb_led (LED4, 1, 0, 1);
-set_rgb_led (LED6, 1, 0, 1);STEER        600   /* maximum steering correction added/subtracted*/
+#define MAX_STEER        600   /* maximum steering correction added/subtracted*/
+
 
 /*
  * DETECT_TH  – object must exceed this to leave SEARCH mode.
@@ -196,8 +195,5 @@ int main(void)
 
 /* Stack guard */
 #define STACK_CHK_GUARD 0xe2dee396
-uintptr_t __stack_chk_guard = STACK_CHK_GUARD;
-void __stack_chk_fail(void) { chSysHalt("Stack smashing detected"); }
-
 uintptr_t __stack_chk_guard = STACK_CHK_GUARD;
 void __stack_chk_fail(void) { chSysHalt("Stack smashing detected"); }
