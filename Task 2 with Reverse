@@ -1,0 +1,235 @@
+/*
+
+- Task 2: Object following with melody
+- 
+- Behaviour:
+- - SEARCH : robot rotates slowly, blue LEDs, no sound
+- - FOLLOW : robot follows object, purple LEDs, STARWARS melody plays
+- - HOLD   : robot stops (object too close), red LEDs, melody stops
+- 
+- Sensor layout (top view):
+- ```
+     front
+  ```
+- 7        0
+- 6            1
+- 5            2
+- 4        3
+- ```
+     back
+  ```
+
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+#include “ch.h”
+#include “hal.h”
+#include “memory_protection.h”
+#include <main.h>
+#include “leds.h”
+#include “spi_comm.h”
+#include “sensors/proximity.h”
+#include “motors.h”
+#include “audio/audio_thread.h”
+#include “audio/play_melody.h”
+#include “audio/play_sound_file.h”
+
+messagebus_t bus;
+MUTEX_DECL(bus_lock);
+CONDVAR_DECL(bus_condvar);
+
+static inline int imax(int a, int b) { return (a > b) ? a : b; }
+static inline int clamp(int v, int lo, int hi)
+{
+return (v < lo) ? lo : (v > hi) ? hi : v;
+}
+
+/* ── Tunable parameters ─────────────────────────────────────────────────── */
+#define SEARCH_SPEED     500
+#define BASE_SPEED       750
+#define MAX_STEER        600
+
+#define DETECT_TH        100
+#define STOP_NEAR        650
+#define STOP_FAR         300
+#define LOST_TH          50
+
+#define STEER_GAIN        60
+#define REVERSE_SPEED    400   /* speed to reverse when object is too close   */
+#define REVERSE_MS       400   /* how long to reverse for (milliseconds)      */
+/* ─────────────────────────────────────────────────────────────────────────  */
+
+typedef enum { SEARCH, FOLLOW, HOLD } State;
+
+int main(void)
+{
+halInit();
+chSysInit();
+mpu_init();
+
+```
+/* Proximity */
+messagebus_init(&bus, &bus_lock, &bus_condvar);
+proximity_start(0);
+calibrate_ir();
+
+/* LEDs */
+clear_leds();
+spi_comm_start();
+
+/* Motors */
+motors_init();
+
+/* Audio — initialised once before the loop */
+dac_start();
+playMelodyStart();
+chThdSleepMilliseconds(50);   /* small pause to let audio thread settle   */
+
+State state      = SEARCH;
+State prev_state = HOLD;      /* force state-entry actions on first loop  */
+
+while (1)
+{
+    /* ── Read sensors ──────────────────────────────────────────────── */
+    int sr    = get_calibrated_prox(0);   /* front-right               */
+    int sl    = get_calibrated_prox(7);   /* front-left                */
+    int front = imax(sr, sl);
+
+    /* ── State machine ─────────────────────────────────────────────── */
+    switch (state)
+    {
+    /* ────────────────────────────────────────────────────────────────
+     * SEARCH: slowly rotate until an object is detected — no melody
+     * ──────────────────────────────────────────────────────────────── */
+    case SEARCH:
+        set_rgb_led(LED8, 0, 0, 1);
+        set_rgb_led(LED2, 0, 0, 1);
+        set_rgb_led(LED4, 0, 0, 1);
+        set_rgb_led(LED6, 0, 0, 1);
+        set_body_led(2);
+        set_front_led(2);
+
+        left_motor_set_speed( SEARCH_SPEED);
+        right_motor_set_speed(-SEARCH_SPEED);
+
+        if (front > DETECT_TH)
+        {
+            prev_state = state;
+            state = FOLLOW;
+        }
+        else
+        {
+            prev_state = SEARCH;
+        }
+        break;
+
+    /* ────────────────────────────────────────────────────────────────
+     * FOLLOW: track the object — STARWARS melody plays
+     * ──────────────────────────────────────────────────────────────── */
+    case FOLLOW:
+        /* Start melody only when first entering FOLLOW */
+        if (prev_state != FOLLOW)
+        {
+            playMelody(STARWARS, ML_SIMPLE_PLAY, NULL);
+        }
+
+        set_rgb_led(LED8, 1, 0, 1);
+        set_rgb_led(LED2, 1, 0, 1);
+        set_rgb_led(LED4, 1, 0, 1);
+        set_rgb_led(LED6, 1, 0, 1);
+        set_front_led(1);
+        set_body_led(1);
+
+        /* Lost the object → search */
+        if (front < LOST_TH)
+        {
+            prev_state = state;
+            state = SEARCH;
+            break;
+        }
+
+        /* Too close → hold */
+        if (front > STOP_NEAR)
+        {
+            prev_state = state;
+            state = HOLD;
+            break;
+        }
+
+        /* Proportional steering */
+        {
+            int error      = sr - sl;
+            int correction = clamp((error * STEER_GAIN) / 100,
+                                   -MAX_STEER, MAX_STEER);
+
+            int left_spd  = clamp(BASE_SPEED + correction, -1000, 1000);
+            int right_spd = clamp(BASE_SPEED - correction, -1000, 1000);
+
+            left_motor_set_speed(left_spd);
+            right_motor_set_speed(right_spd);
+        }
+
+        prev_state = FOLLOW;
+        break;
+
+    /* ────────────────────────────────────────────────────────────────
+     * HOLD: object too close — stop motors and stop melody
+     * ──────────────────────────────────────────────────────────────── */
+    case HOLD:
+        set_rgb_led(LED8, 1, 0, 0);
+        set_rgb_led(LED2, 1, 0, 0);
+        set_rgb_led(LED4, 1, 0, 0);
+        set_rgb_led(LED6, 1, 0, 0);
+        set_body_led(1);
+        set_front_led(0);
+
+        /* Reverse for a fixed time so the robot actually moves back,
+         * then re-read sensors and decide what to do next             */
+        left_motor_set_speed(-REVERSE_SPEED);
+        right_motor_set_speed(-REVERSE_SPEED);
+        chThdSleepMilliseconds(REVERSE_MS);
+
+        left_motor_set_speed(0);
+        right_motor_set_speed(0);
+
+        /* After reversing, re-read front sensors */
+        {
+            int sr_new    = get_calibrated_prox(0);
+            int sl_new    = get_calibrated_prox(7);
+            int front_new = imax(sr_new, sl_new);
+
+            if (front_new < STOP_FAR)
+            {
+                /* Enough space now → resume following */
+                prev_state = state;
+                state = FOLLOW;
+            }
+            else if (front_new < LOST_TH)
+            {
+                /* Lost object → search */
+                prev_state = state;
+                state = SEARCH;
+            }
+            else
+            {
+                /* Still too close → stay in HOLD and reverse again */
+                prev_state = HOLD;
+            }
+        }
+        break;
+    }
+
+    chThdSleepMilliseconds(30);
+}
+```
+
+}
+
+/* Stack guard */
+#define STACK_CHK_GUARD 0xe2dee396
+uintptr_t __stack_chk_guard = STACK_CHK_GUARD;
+void __stack_chk_fail(void) { chSysHalt(“Stack smashing detected”); }
